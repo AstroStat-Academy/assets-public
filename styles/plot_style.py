@@ -29,3 +29,7 @@ plt.rcParams.update({
     "legend.edgecolor": "gray", # Set legend edge color
     "legend.labelcolor": "gray" # Set legend text color    
 })
+
+print('Imported matplotlib.')
+print('Imported saborn.')
+print('Plotting style set.')
