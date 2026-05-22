@@ -31,5 +31,5 @@ plt.rcParams.update({
 })
 
 print('Imported matplotlib.')
-print('Imported saborn.')
+print('Imported seaborn.')
 print('Plotting style set.')
