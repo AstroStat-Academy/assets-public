@@ -14,43 +14,55 @@ def clone_and_cd_colab() -> None:
     from pathlib import Path
     from urllib.parse import unquote
 
-    if "google.colab" in sys.modules:
+    if "google.colab" not in sys.modules:
+        print('Running locally, skipping Colab setup.')
+        return
+
+    try:
+        import ipynbname
+
+    except ImportError:
+
+        subprocess.run(
+            ["pip", "-q", "install", "ipynbname"],
+            check=True
+        )
 
         import ipynbname
 
-        s = unquote(ipynbname.name())
-        url = s.split("fileId=")[-1]
+    s = unquote(ipynbname.name())
+    url = s.split("fileId=")[-1]
 
-        before, after = url.split("/blob/", 1)
+    before, after = url.split("/blob/", 1)
 
-        repo_url = before + ".git"
+    repo_url = before + ".git"
 
-        branch, notebook_path = after.split("/", 1)
+    branch, notebook_path = after.split("/", 1)
 
-        repo_name = Path(before).name
-        subfolder = Path(notebook_path).parent
+    repo_name = Path(before).name
+    subfolder = Path(notebook_path).parent
 
-        if not Path(f"/content/{repo_name}").exists():
+    if not Path(f"/content/{repo_name}").exists():
 
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "-b",
-                    branch,
-                    repo_url
-                ],
-                check=True
-            )
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "-b",
+                branch,
+                repo_url
+            ],
+            check=True
+        )
 
-        target = f"/content/{repo_name}/{subfolder}"
+    target = f"/content/{repo_name}/{subfolder}"
 
-        print("Working in:")
-        print(target)
+    print("Working in:")
+    print(target)
 
-        os.chdir(target)
+    os.chdir(target)
 
-        print("\nContent:")
-        print("\t", sorted(os.listdir(".")))
+    print("\nContent:")
+    print("\t", sorted(os.listdir(".")))
 
 clone_and_cd_colab()
