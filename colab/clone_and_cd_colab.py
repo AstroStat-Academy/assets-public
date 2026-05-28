@@ -52,3 +52,5 @@ def clone_and_cd_colab() -> None:
 
         print("\nContent:")
         print("\t", sorted(os.listdir(".")))
+
+clone_and_cd_colab()
