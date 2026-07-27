@@ -1,20 +1,11 @@
 def clone_and_cd_colab() -> None:
-    """
-    Detect the source GitHub repository, clone it, and move into the notebook
-    subfolder when running in Google Colab.
-
-    Detection works when:
-    - the notebook is opened directly from GitHub/Jupyter Book; or
-    - a Drive copy still contains its original GitHub/Colab source link.
-    """
-
     import json
     import os
     import re
     import sys
     import subprocess
     from pathlib import Path
-    from urllib.parse import unquote
+    from urllib.parse import unquote, urlparse
 
     if "google.colab" not in sys.modules:
         print("Running locally, skipping Colab setup.")
@@ -29,64 +20,176 @@ def clone_and_cd_colab() -> None:
         )
         import ipynbname
 
-    candidates = [unquote(str(ipynbname.name()))]
+    def decode_repeatedly(value: object) -> str:
+        text = str(value)
+
+        for _ in range(5):
+            decoded = unquote(text)
+
+            if decoded == text:
+                break
+
+            text = decoded
+
+        return text.replace("\\/", "/").replace("\\u002F", "/")
+
+    def extract_github_info(value: object):
+        text = decode_repeatedly(value)
+
+        prefixes = (
+            "https://colab.research.google.com/github/",
+            "http://colab.research.google.com/github/",
+        )
+
+        for prefix in prefixes:
+            text = text.replace(prefix, "https://github.com/")
+
+        patterns = (
+            r"https?://github\.com/"
+            r"(?P<owner>[^/\s\"'<>?&]+)/"
+            r"(?P<repo>[^/\s\"'<>?&]+?)(?:\.git)?/"
+            r"blob/"
+            r"(?P<branch>[^/\s\"'<>?&]+)/"
+            r"(?P<path>[^\s\"'<>?&#]+?\.ipynb)",
+
+            r"github\.com/"
+            r"(?P<owner>[^/\s\"'<>?&]+)/"
+            r"(?P<repo>[^/\s\"'<>?&]+?)(?:\.git)?/"
+            r"blob/"
+            r"(?P<branch>[^/\s\"'<>?&]+)/"
+            r"(?P<path>[^\s\"'<>?&#]+?\.ipynb)",
+        )
+
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+
+            if match:
+                owner = match.group("owner")
+                repo = match.group("repo").removesuffix(".git")
+                branch = match.group("branch")
+                notebook_path = match.group("path")
+
+                return {
+                    "repo_url": f"https://github.com/{owner}/{repo}.git",
+                    "repo_name": repo,
+                    "branch": branch,
+                    "notebook_path": notebook_path,
+                }
+
+        if "/blob/" in text:
+            candidate = text
+
+            if "fileId=" in candidate:
+                candidate = candidate.split("fileId=", 1)[1]
+
+            github_index = candidate.find("https://github.com/")
+
+            if github_index >= 0:
+                candidate = candidate[github_index:]
+
+            candidate = candidate.split("#", 1)[0]
+            candidate = candidate.split("?", 1)[0]
+
+            try:
+                before, after = candidate.split("/blob/", 1)
+                parsed = urlparse(before)
+                parts = [part for part in parsed.path.split("/") if part]
+
+                if parsed.netloc == "github.com" and len(parts) >= 2:
+                    owner = parts[0]
+                    repo = parts[1].removesuffix(".git")
+                    branch, notebook_path = after.split("/", 1)
+
+                    notebook_match = re.search(
+                        r"(.+?\.ipynb)",
+                        notebook_path,
+                        flags=re.IGNORECASE,
+                    )
+
+                    if notebook_match:
+                        notebook_path = notebook_match.group(1)
+
+                        return {
+                            "repo_url": f"https://github.com/{owner}/{repo}.git",
+                            "repo_name": repo,
+                            "branch": branch,
+                            "notebook_path": notebook_path,
+                        }
+            except Exception:
+                pass
+
+        return None
+
+    candidates = []
+
+    for getter in (
+        lambda: ipynbname.name(),
+        lambda: ipynbname.path(),
+    ):
+        try:
+            candidates.append(getter())
+        except Exception:
+            pass
 
     try:
         from google.colab import _message
 
-        response = _message.blocking_request("get_ipynb")
-        notebook = response.get("ipynb", response)
+        for request_name in (
+            "get_ipynb",
+            "get_notebook_info",
+        ):
+            try:
+                response = _message.blocking_request(request_name)
+                candidates.append(response)
+                candidates.append(json.dumps(response))
+            except Exception:
+                pass
 
-        candidates.append(json.dumps(notebook))
+        try:
+            response = _message.blocking_request("get_ipynb")
+            notebook = response.get("ipynb", response)
 
-        for cell in notebook.get("cells", []):
-            source = cell.get("source", "")
-            if isinstance(source, list):
-                source = "".join(source)
-            candidates.append(source)
+            candidates.append(notebook.get("metadata", {}))
+
+            for cell in notebook.get("cells", []):
+                candidates.append(cell.get("source", ""))
+                candidates.append(cell.get("metadata", {}))
+                candidates.append(cell.get("outputs", []))
+        except Exception:
+            pass
 
     except Exception:
         pass
 
-    patterns = [
-        re.compile(
-            r"https?://colab\.research\.google\.com/github/"
-            r"([^/\s\"'<>]+)/([^/\s\"'<>]+)/blob/"
-            r"([^/\s\"'<>]+)/([^\s\"'<>?#]+\.ipynb)"
-        ),
-        re.compile(
-            r"https?://github\.com/"
-            r"([^/\s\"'<>]+)/([^/\s\"'<>]+)/blob/"
-            r"([^/\s\"'<>]+)/([^\s\"'<>?#]+\.ipynb)"
-        ),
-    ]
+    for key, value in os.environ.items():
+        if any(
+            token in key.upper()
+            for token in ("COLAB", "NOTEBOOK", "GITHUB", "IPYNB")
+        ):
+            candidates.append(value)
 
-    match = None
+    info = None
 
     for candidate in candidates:
-        candidate = unquote(candidate)
+        if isinstance(candidate, (dict, list, tuple)):
+            candidate = json.dumps(candidate)
 
-        for pattern in patterns:
-            match = pattern.search(candidate)
+        info = extract_github_info(candidate)
 
-            if match:
-                break
-
-        if match:
+        if info is not None:
             break
 
-    if match is None:
+    if info is None:
         raise RuntimeError(
-            "Cannot determine the source GitHub repository automatically. "
-            "The Drive copy does not contain an original GitHub or Colab link."
+            "Could not determine the source GitHub repository automatically."
         )
 
-    owner, repo_name, branch, notebook_path = match.groups()
+    repo_url = info["repo_url"]
+    repo_name = info["repo_name"]
+    branch = info["branch"]
+    notebook_path = Path(info["notebook_path"])
 
-    repo_name = repo_name.removesuffix(".git")
-    repo_url = f"https://github.com/{owner}/{repo_name}.git"
     repo_path = Path("/content") / repo_name
-    subfolder = Path(notebook_path).parent
 
     if repo_path.exists():
         if not (repo_path / ".git").is_dir():
@@ -130,30 +233,35 @@ def clone_and_cd_colab() -> None:
             check=True,
         )
 
-    repo_url = subprocess.check_output(
-        ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
-        text=True,
-    ).strip()
-
-    branch = subprocess.check_output(
-        ["git", "-C", str(repo_path), "branch", "--show-current"],
-        text=True,
-    ).strip()
-
-    target = (repo_path / subfolder).resolve()
+    target = (repo_path / notebook_path.parent).resolve()
 
     if not target.is_dir():
-        raise FileNotFoundError(
-            f"Notebook directory does not exist: {target}"
-        )
+        matches = list(repo_path.rglob(notebook_path.name))
+
+        if len(matches) == 1:
+            target = matches[0].parent.resolve()
+        else:
+            raise FileNotFoundError(
+                f"Notebook directory does not exist: {target}"
+            )
 
     os.chdir(target)
 
     print("Repository:")
-    print(repo_url)
+    print(
+        subprocess.check_output(
+            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
+            text=True,
+        ).strip()
+    )
 
     print("\nBranch:")
-    print(branch)
+    print(
+        subprocess.check_output(
+            ["git", "-C", str(repo_path), "branch", "--show-current"],
+            text=True,
+        ).strip()
+    )
 
     print("\nWorking in:")
     print(target)
